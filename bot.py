@@ -257,6 +257,13 @@ async def finalize(message: types.Message, state: FSMContext, inn: str = "", kpp
 
     asyncio.create_task(append_row(row))
 
+    # ⬇️ ВАЖНО: всё внутри функции
+    await state.finish()
+    await message.answer(
+        "Спасибо за обратную связь, ваше мнение поможет нам стать лучше 💙",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
     await state.finish()
     await message.answer(
     "Спасибо за обратную связь, ваше мнение поможет нам стать лучше 💙",
