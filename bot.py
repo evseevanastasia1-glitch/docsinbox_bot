@@ -304,9 +304,6 @@ async def on_shutdown(app: web.Application):
     await dp.storage.close()
     await dp.storage.wait_closed()
 
-    # закрываем aiohttp session (иначе "Unclosed client session")
-    await bot.session.close()
-
 def main():
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
