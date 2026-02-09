@@ -25,19 +25,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан")
 
-GOOGLE_SHEET_ID = os.getenv(
-    "GOOGLE_SHEET_ID",
-    "1Mkdpte7ILplqPisRQP98lXFLFEGrdcEY1gRd2iPGzuU",
-).strip()
-
-GOOGLE_SHEET_WORKSHEET = os.getenv("GOOGLE_SHEET_WORKSHEET", "Лист1").strip()
-
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "").strip() or "1Mkdpte7ILplqPisRQP98lXFLFEGrdcEY1gRd2iPGzuU"
+GOOGLE_SHEET_WORKSHEET = os.getenv("GOOGLE_SHEET_WORKSHEET", "").strip() or "Лист1"
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+
+PORT = int(os.getenv("PORT", "10000"))
 
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
 bot = Bot(token=BOT_TOKEN, parse_mode=types.ParseMode.HTML)
 dp = Dispatcher(bot, storage=MemoryStorage())
+
 
 # -------------------- КНОПКИ --------------------
 def kb_expectations():
@@ -88,8 +86,9 @@ def now_str():
 
 
 def parse_rating(text: str) -> Optional[int]:
-    if text.isdigit():
-        v = int(text)
+    t = (text or "").strip()
+    if t.isdigit():
+        v = int(t)
         if 0 <= v <= 10:
             return v
     return None
@@ -106,7 +105,8 @@ def churn_risk(rating: int) -> str:
 
 
 def extract_inn_kpp(text: str) -> Tuple[str, str]:
-    nums = re.findall(r"\d+", text)
+    raw = (text or "").strip()
+    nums = re.findall(r"\d+", raw)
     inn = ""
     kpp = ""
     for n in nums:
@@ -118,12 +118,14 @@ def extract_inn_kpp(text: str) -> Tuple[str, str]:
             kpp = n
             break
     if not inn and not kpp:
-        return text.strip(), ""
+        return raw, ""
     return inn, kpp
 
 
 # -------------------- Google Sheets --------------------
 def get_sheets_service():
+    if not GOOGLE_SERVICE_ACCOUNT_JSON:
+        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON не задан")
     info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
     creds = Credentials.from_service_account_info(
         info,
@@ -139,6 +141,7 @@ async def append_row(row: list):
             spreadsheetId=GOOGLE_SHEET_ID,
             range=f"{GOOGLE_SHEET_WORKSHEET}!A:I",
             valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
             body={"values": [row]},
         ).execute()
 
@@ -158,9 +161,14 @@ async def start(message: types.Message, state: FSMContext):
     await FeedbackFSM.expectations.set()
 
 
-@dp.message_handler(state=FeedbackFSM.expectations)
+@dp.message_handler(state=FeedbackFSM.expectations, content_types=types.ContentTypes.TEXT)
 async def on_expectations(message: types.Message, state: FSMContext):
-    await state.update_data(expectations=message.text)
+    txt = (message.text or "").strip()
+    if txt not in ["✅ Да", "❌ Нет", "⚖️ Частично"]:
+        await message.answer("Пожалуйста, выберите вариант кнопкой ниже 🙂", reply_markup=kb_expectations())
+        return
+
+    await state.update_data(expectations=txt)
     await message.answer(
         "Спасибо!\nОцените сервис по шкале от 0 до 10",
         reply_markup=types.ReplyKeyboardRemove(),
@@ -168,7 +176,7 @@ async def on_expectations(message: types.Message, state: FSMContext):
     await FeedbackFSM.rating.set()
 
 
-@dp.message_handler(state=FeedbackFSM.rating)
+@dp.message_handler(state=FeedbackFSM.rating, content_types=types.ContentTypes.TEXT)
 async def on_rating(message: types.Message, state: FSMContext):
     rating = parse_rating(message.text)
     if rating is None:
@@ -177,10 +185,13 @@ async def on_rating(message: types.Message, state: FSMContext):
 
     await state.update_data(rating=rating)
 
+    # 9–10: без ИНН/КПП, сразу финал
     if rating >= 9:
-        await finalize(message, state, "", "", "", "")
+        await message.answer("Спасибо за высокую оценку и что выбрали нас! ❤️")
+        await finalize(message, state, inn="", kpp="")
         return
 
+    # 7–8: текст + причины
     if rating >= 7:
         await message.answer("Спасибо за оценку!\nПодскажите, пожалуйста, что пошло не так.")
     else:
@@ -196,16 +207,17 @@ async def on_rating(message: types.Message, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data.startswith("r:"), state=FeedbackFSM.reason)
 async def on_reason(call: types.CallbackQuery, state: FSMContext):
     code = call.data.split(":")[1]
-    await state.update_data(reason=REASONS[code])
+    await state.update_data(reason=REASONS.get(code, ""))
     await call.answer()
 
     if code == "5":
-        await call.message.edit_text("Пожалуйста, напишите комментарий (обязательно):")
+        await call.message.edit_text("Пожалуйста, напишите комментарий (для пункта «Другое» он обязателен):")
     else:
         await call.message.edit_text(
-            "Если хотите — оставьте комментарий.\nИли нажмите «Пропустить».",
+            "Если хотите — оставьте комментарий (необязательно).\nИли нажмите «Пропустить».",
             reply_markup=kb_skip(),
         )
+
     await FeedbackFSM.comment.set()
 
 
@@ -216,40 +228,49 @@ async def skip(call: types.CallbackQuery, state: FSMContext):
     await ask_inn(call.message, state)
 
 
-@dp.message_handler(state=FeedbackFSM.comment)
+@dp.message_handler(state=FeedbackFSM.comment, content_types=types.ContentTypes.TEXT)
 async def on_comment(message: types.Message, state: FSMContext):
-    await state.update_data(comment=message.text)
+    data = await state.get_data()
+    reason = data.get("reason", "")
+    comment = (message.text or "").strip()
+
+    # если "Другое" — комментарий обязателен
+    if reason == REASONS["5"] and not comment:
+        await message.answer("Для пункта «Другое» нужен комментарий 🙂 Напишите, пожалуйста, пару слов.")
+        return
+
+    await state.update_data(comment=comment)
     await ask_inn(message, state)
 
 
 async def ask_inn(message: types.Message, state: FSMContext):
     await message.answer(
-        "Пожалуйста, укажите ИНН (или ИНН/КПП, если есть).\n"
-        "Можно писать в любом формате.",
+        "Пожалуйста, укажите ИНН (или ИНН/КПП, если есть), чтобы мы могли корректно идентифицировать компанию.\n"
+        "Можно писать в любом формате: например, «ИНН 770... КПП 770...», «770.../770...», «770... 770...».",
     )
     await FeedbackFSM.innkpp.set()
 
 
-@dp.message_handler(state=FeedbackFSM.innkpp)
+@dp.message_handler(state=FeedbackFSM.innkpp, content_types=types.ContentTypes.TEXT)
 async def on_inn(message: types.Message, state: FSMContext):
     inn, kpp = extract_inn_kpp(message.text)
-    await finalize(message, state, inn, kpp)
+    await finalize(message, state, inn=inn, kpp=kpp)
 
 
-async def finalize(message, state, inn="", kpp="", *_):
+async def finalize(message: types.Message, state: FSMContext, inn: str = "", kpp: str = ""):
     data = await state.get_data()
-    rating = data["rating"]
+    rating = int(data.get("rating", 0))
 
     row = [
-        now_str(),
-        str(message.from_user.id),
-        data.get("expectations", ""),
-        rating,
-        data.get("reason", ""),
-        data.get("comment", ""),
-        inn,
-        kpp,
-        churn_risk(rating),
+        now_str(),                         # Дата
+        str(message.from_user.id),          # Telegram ID
+        data.get("expectations", ""),       # Ожидания
+        rating,                             # Оценка
+        data.get("reason", ""),             # Причина
+        data.get("comment", ""),            # Комментарий
+        inn,                                # ИНН
+        kpp,                                # КПП
+        churn_risk(rating),                 # Риск оттока
     ]
 
     asyncio.create_task(append_row(row))
@@ -262,6 +283,28 @@ async def finalize(message, state, inn="", kpp="", *_):
     await FeedbackFSM.expectations.set()
 
 
+# -------------------- HEALTHCHECK ДЛЯ WEB SERVICE --------------------
+async def health_server():
+    app = web.Application()
+
+    async def health(_request):
+        return web.Response(text="ok")
+
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logging.info("Health server started on port %s", PORT)
+
+
+async def on_startup(_dp: Dispatcher):
+    # поднимаем порт, чтобы Render видел "web service"
+    asyncio.create_task(health_server())
+
+
 # -------------------- ЗАПУСК --------------------
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
