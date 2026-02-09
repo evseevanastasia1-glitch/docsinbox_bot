@@ -302,6 +302,7 @@ async def health_server():
 
 # -------------------- ЗАПУСК --------------------
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     loop.create_task(health_server())
     executor.start_polling(dp, skip_updates=True)
