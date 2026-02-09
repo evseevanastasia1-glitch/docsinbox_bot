@@ -12,17 +12,18 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import executor
 
+from aiohttp import web
+
 try:
     import uvloop  # ускоряет event loop на Linux (Render)
     uvloop.install()
 except Exception:
     pass
 
-
 # -------------------- НАСТРОЙКИ --------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID", "").strip()  # можно не указывать
-DATA_FILE = os.getenv("DATA_FILE", "feedback.jsonl")  # куда писать ответы (на Render файл временный, но для отладки ок)
+DATA_FILE = os.getenv("DATA_FILE", "feedback.jsonl")  # на Render файл временный, но для отладки ок
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN в переменных окружения")
@@ -36,12 +37,11 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 # -------------------- УТИЛИТЫ --------------------
 def extract_inn_kpp(text: str):
     """
-    Достаём ИНН (10 или 12 цифр) и КПП (обычно 9, но будем терпеть 8-10, чтобы 'как угодно').
-    Работает с форматами типа:
+    Достаём ИНН (10 или 12 цифр) и КПП (обычно 9, но принимаем 8-10, чтобы 'как угодно').
+    Примеры:
     - 7813550941 / 78130100
     - ИНН 7813550941 КПП 781301009
     - 7813550941 781301009
-    - любые символы/пробелы/слеши
     """
     if not text:
         return None, None
@@ -50,14 +50,11 @@ def extract_inn_kpp(text: str):
     inn = None
     kpp = None
 
-    # Сначала ищем ИНН как группу 10 или 12
     for g in digits_groups:
         if len(g) in (10, 12):
             inn = g
             break
 
-    # КПП: обычно 9, но будем более мягкими (8-10),
-    # чтобы не ругаться на "78130100" как на скрине
     for g in digits_groups:
         if len(g) in (8, 9, 10) and g != inn:
             kpp = g
@@ -67,10 +64,7 @@ def extract_inn_kpp(text: str):
 
 
 async def append_jsonl(path: str, payload: dict):
-    """
-    Асинхронная запись одной строки JSONL.
-    Чтобы не лагало — пишем через to_thread (не блокируем event loop).
-    """
+    """Асинхронная запись одной строки JSONL (чтобы не лагало)."""
     line = json.dumps(payload, ensure_ascii=False) + "\n"
 
     def _write():
@@ -149,7 +143,10 @@ async def start(message: types.Message, state: FSMContext):
     await FeedbackFSM.topic.set()
 
 
-@dp.message_handler(lambda m: m.text in ["Процесс внедрения", "Работа менеджера", "Поддержка / сопровождение"], state=FeedbackFSM.topic)
+@dp.message_handler(
+    lambda m: m.text in ["Процесс внедрения", "Работа менеджера", "Поддержка / сопровождение"],
+    state=FeedbackFSM.topic,
+)
 async def on_topic(message: types.Message, state: FSMContext):
     await state.update_data(topic=message.text)
 
@@ -260,8 +257,8 @@ async def finalize_feedback(message: types.Message, state: FSMContext):
     except Exception:
         pass
 
-    # 2) Тихо отправим менеджеру (если задан MANAGER_CHAT_ID)
-    if MANAGER_CHAT_ID:6538931451
+    # 2) Отправим менеджеру (если задан MANAGER_CHAT_ID)
+    if MANAGER_CHAT_ID:
         try:
             text = (
                 "📝 <b>Новая обратная связь</b>\n"
@@ -279,7 +276,6 @@ async def finalize_feedback(message: types.Message, state: FSMContext):
 
     await state.finish()
 
-    # Финальный текст, который ты просила:
     await message.answer(
         "Спасибо за обратную связь! 🙏 Ваша оценка поможет нам стать лучше!",
         reply_markup=kb_topic(),
@@ -287,7 +283,25 @@ async def finalize_feedback(message: types.Message, state: FSMContext):
     await FeedbackFSM.topic.set()
 
 
+# -------------------- HEALTHCHECK ДЛЯ RENDER WEB SERVICE --------------------
+async def health_server():
+    app = web.Application()
+
+    async def health(request):
+        return web.Response(text="ok")
+
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+
 # -------------------- ЗАПУСК --------------------
 if __name__ == "__main__":
-    # skip_updates=True ускоряет старт, чтобы бот не пытался обработать старые апдейты
+    loop = asyncio.get_event_loop()
+    loop.create_task(health_server())
     executor.start_polling(dp, skip_updates=True)
