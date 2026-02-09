@@ -13,13 +13,6 @@ from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import executor
 
 from aiohttp import web
-
-try:
-    import uvloop  # ускоряет event loop на Linux (Render)
-    uvloop.install()
-except Exception:
-    pass
-
 # -------------------- НАСТРОЙКИ --------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID", "").strip()  # можно не указывать
@@ -302,7 +295,4 @@ async def health_server():
 
 # -------------------- ЗАПУСК --------------------
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(health_server())
     executor.start_polling(dp, skip_updates=True)
