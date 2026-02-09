@@ -315,8 +315,8 @@ async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
 
-        # ✅ правильно для aiogram 3.x
-        update = Update.model_validate(data)
+        # ✅ правильно для aiogram 2.x
+        update = types.Update.to_object(data)
 
         await dp.feed_update(bot, update)
     except Exception:
