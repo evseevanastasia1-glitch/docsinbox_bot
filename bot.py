@@ -258,8 +258,11 @@ async def finalize(message: types.Message, state: FSMContext, inn: str = "", kpp
     asyncio.create_task(append_row(row))
 
     await state.finish()
-    await message.answer("Спасибо за обратную связь, ваше мнение поможет нам стать лучше 💙", reply_markup=kb_expectations())
-    await FeedbackFSM.expectations.set()
+    await message.answer(
+    "Спасибо за обратную связь, ваше мнение поможет нам стать лучше 💙",
+    reply_markup=types.ReplyKeyboardRemove()
+)
+await state.finish()
 
 # -------------------- WEB APP (Webhook + Health) --------------------
 async def handle_webhook(request: web.Request):
