@@ -36,7 +36,7 @@ WEBHOOK_BASE = (os.getenv("RENDER_EXTERNAL_URL", "").strip() or os.getenv("WEBHO
 if not WEBHOOK_BASE:
     raise RuntimeError("Нет WEBHOOK_BASE/RENDER_EXTERNAL_URL. Задай WEBHOOK_BASE в Render.")
 
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
@@ -272,10 +272,20 @@ async def finalize(
     )
 
 # -------------------- WEB APP (Webhook + Health) --------------------
-async def handle_webhook(request: web.Request):
-    # Telegram присылает JSON update
-    update = types.Update(**await request.json())
-    await dp.process_update(update)
+async def  handle_webhook(request: web.Request):
+    try:
+        data = await request.json()
+
+        # правильно для aiogram 2.x
+        update = types.Update.de_json(data)
+
+        # ВАЖНО: говорим aiogram "вот наш bot"
+        Bot.set_current(bot)
+
+        await dp.process_update(update)
+    except Exception:
+        logging.exception("Webhook handler crashed")
+
     return web.Response(text="ok")
 
 async def health(_request: web.Request):
