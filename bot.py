@@ -508,8 +508,10 @@ async def finish(message: types.Message, state: FSMContext):
 async def webhook(request):
     data = await request.json()
     update = types.Update.to_object(data)
-    Bot.set_current(bot
+
+    Bot.set_current(bot)
     Dispatcher.set_current(dp)
+
     await dp.process_update(update)
     return web.Response(text="ok")
 
