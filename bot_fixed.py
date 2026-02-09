@@ -303,7 +303,7 @@ async def finalize(message: types.Message, state: FSMContext, inn: str = "", kpp
         data.get("comment", ""),       # Комментарий
         inn,                           # ИНН
         kpp,                           # КПП
-        churn_risk(rating),            # Риск оттока
+        churn_risk(int(data.get("rating", 0))),  # Риск оттока
     ]
 
     # Запись в Google Sheets: добавление новой строки (не замена)
