@@ -11,16 +11,15 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.utils import executor
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
 from aiohttp import web
 
-# -------------------- НАСТРОЙКИ --------------------
 logging.basicConfig(level=logging.INFO)
 
+# --- ENV ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан")
@@ -31,18 +30,25 @@ GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip
 
 PORT = int(os.getenv("PORT", "10000"))
 
+# Render обычно даёт внешний URL в переменной RENDER_EXTERNAL_URL.
+# Если вдруг нет — задай WEBHOOK_BASE вручную (см. инструкцию ниже).
+WEBHOOK_BASE = (os.getenv("RENDER_EXTERNAL_URL", "").strip() or os.getenv("WEBHOOK_BASE", "").strip()).rstrip("/")
+if not WEBHOOK_BASE:
+    raise RuntimeError("Нет WEBHOOK_BASE/RENDER_EXTERNAL_URL. Задай WEBHOOK_BASE в Render.")
+
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
+
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
 bot = Bot(token=BOT_TOKEN, parse_mode=types.ParseMode.HTML)
 dp = Dispatcher(bot, storage=MemoryStorage())
-
 
 # -------------------- КНОПКИ --------------------
 def kb_expectations():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("✅ Да", "❌ Нет", "⚖️ Частично")
     return kb
-
 
 def kb_reasons():
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -55,12 +61,10 @@ def kb_reasons():
     )
     return kb
 
-
 def kb_skip():
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("Пропустить", callback_data="skip"))
     return kb
-
 
 REASONS = {
     "1": "Долгое подключение поставщиков",
@@ -70,7 +74,6 @@ REASONS = {
     "5": "Другое",
 }
 
-
 # -------------------- FSM --------------------
 class FeedbackFSM(StatesGroup):
     expectations = State()
@@ -79,11 +82,9 @@ class FeedbackFSM(StatesGroup):
     comment = State()
     innkpp = State()
 
-
 # -------------------- УТИЛИТЫ --------------------
 def now_str():
     return datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
 
 def parse_rating(text: str) -> Optional[int]:
     t = (text or "").strip()
@@ -93,7 +94,6 @@ def parse_rating(text: str) -> Optional[int]:
             return v
     return None
 
-
 def churn_risk(rating: int) -> str:
     if rating >= 9:
         return "5–10%"
@@ -102,7 +102,6 @@ def churn_risk(rating: int) -> str:
     if rating >= 5:
         return "50–70%"
     return "80%+"
-
 
 def extract_inn_kpp(text: str) -> Tuple[str, str]:
     raw = (text or "").strip()
@@ -121,7 +120,6 @@ def extract_inn_kpp(text: str) -> Tuple[str, str]:
         return raw, ""
     return inn, kpp
 
-
 # -------------------- Google Sheets --------------------
 def get_sheets_service():
     if not GOOGLE_SERVICE_ACCOUNT_JSON:
@@ -132,7 +130,6 @@ def get_sheets_service():
         scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
-
 
 async def append_row(row: list):
     def _write():
@@ -147,8 +144,7 @@ async def append_row(row: list):
 
     await asyncio.to_thread(_write)
 
-
-# -------------------- ХЭНДЛЕРЫ --------------------
+# -------------------- ХЭНДЛЕРЫ БОТА --------------------
 @dp.message_handler(commands=["start", "restart"], state="*")
 async def start(message: types.Message, state: FSMContext):
     await state.finish()
@@ -160,7 +156,6 @@ async def start(message: types.Message, state: FSMContext):
     )
     await FeedbackFSM.expectations.set()
 
-
 @dp.message_handler(state=FeedbackFSM.expectations, content_types=types.ContentTypes.TEXT)
 async def on_expectations(message: types.Message, state: FSMContext):
     txt = (message.text or "").strip()
@@ -169,12 +164,8 @@ async def on_expectations(message: types.Message, state: FSMContext):
         return
 
     await state.update_data(expectations=txt)
-    await message.answer(
-        "Спасибо!\nОцените сервис по шкале от 0 до 10",
-        reply_markup=types.ReplyKeyboardRemove(),
-    )
+    await message.answer("Спасибо!\nОцените сервис по шкале от 0 до 10", reply_markup=types.ReplyKeyboardRemove())
     await FeedbackFSM.rating.set()
-
 
 @dp.message_handler(state=FeedbackFSM.rating, content_types=types.ContentTypes.TEXT)
 async def on_rating(message: types.Message, state: FSMContext):
@@ -185,13 +176,12 @@ async def on_rating(message: types.Message, state: FSMContext):
 
     await state.update_data(rating=rating)
 
-    # 9–10: без ИНН/КПП, сразу финал
+    # 9–10: ИНН/КПП НЕ спрашиваем
     if rating >= 9:
         await message.answer("Спасибо за высокую оценку и что выбрали нас! ❤️")
         await finalize(message, state, inn="", kpp="")
         return
 
-    # 7–8: текст + причины
     if rating >= 7:
         await message.answer("Спасибо за оценку!\nПодскажите, пожалуйста, что пошло не так.")
     else:
@@ -202,7 +192,6 @@ async def on_rating(message: types.Message, state: FSMContext):
 
     await message.answer("Выберите причину:", reply_markup=kb_reasons())
     await FeedbackFSM.reason.set()
-
 
 @dp.callback_query_handler(lambda c: c.data.startswith("r:"), state=FeedbackFSM.reason)
 async def on_reason(call: types.CallbackQuery, state: FSMContext):
@@ -217,9 +206,7 @@ async def on_reason(call: types.CallbackQuery, state: FSMContext):
             "Если хотите — оставьте комментарий (необязательно).\nИли нажмите «Пропустить».",
             reply_markup=kb_skip(),
         )
-
     await FeedbackFSM.comment.set()
-
 
 @dp.callback_query_handler(lambda c: c.data == "skip", state=FeedbackFSM.comment)
 async def skip(call: types.CallbackQuery, state: FSMContext):
@@ -227,21 +214,18 @@ async def skip(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(comment="")
     await ask_inn(call.message, state)
 
-
 @dp.message_handler(state=FeedbackFSM.comment, content_types=types.ContentTypes.TEXT)
 async def on_comment(message: types.Message, state: FSMContext):
     data = await state.get_data()
     reason = data.get("reason", "")
     comment = (message.text or "").strip()
 
-    # если "Другое" — комментарий обязателен
     if reason == REASONS["5"] and not comment:
         await message.answer("Для пункта «Другое» нужен комментарий 🙂 Напишите, пожалуйста, пару слов.")
         return
 
     await state.update_data(comment=comment)
     await ask_inn(message, state)
-
 
 async def ask_inn(message: types.Message, state: FSMContext):
     await message.answer(
@@ -250,61 +234,62 @@ async def ask_inn(message: types.Message, state: FSMContext):
     )
     await FeedbackFSM.innkpp.set()
 
-
 @dp.message_handler(state=FeedbackFSM.innkpp, content_types=types.ContentTypes.TEXT)
 async def on_inn(message: types.Message, state: FSMContext):
     inn, kpp = extract_inn_kpp(message.text)
     await finalize(message, state, inn=inn, kpp=kpp)
-
 
 async def finalize(message: types.Message, state: FSMContext, inn: str = "", kpp: str = ""):
     data = await state.get_data()
     rating = int(data.get("rating", 0))
 
     row = [
-        now_str(),                         # Дата
-        str(message.from_user.id),          # Telegram ID
-        data.get("expectations", ""),       # Ожидания
-        rating,                             # Оценка
-        data.get("reason", ""),             # Причина
-        data.get("comment", ""),            # Комментарий
-        inn,                                # ИНН
-        kpp,                                # КПП
-        churn_risk(rating),                 # Риск оттока
+        now_str(),                    # Дата
+        str(message.from_user.id),     # Telegram ID
+        data.get("expectations", ""),  # Ожидания
+        rating,                        # Оценка
+        data.get("reason", ""),        # Причина
+        data.get("comment", ""),       # Комментарий
+        inn,                           # ИНН
+        kpp,                           # КПП
+        churn_risk(rating),            # Риск оттока
     ]
 
     asyncio.create_task(append_row(row))
 
     await state.finish()
-    await message.answer(
-        "Спасибо за обратную связь, ваше мнение поможет нам стать лучше 💙",
-        reply_markup=kb_expectations(),
-    )
+    await message.answer("Спасибо за обратную связь, ваше мнение поможет нам стать лучше 💙", reply_markup=kb_expectations())
     await FeedbackFSM.expectations.set()
 
+# -------------------- WEB APP (Webhook + Health) --------------------
+async def handle_webhook(request: web.Request):
+    # Telegram присылает JSON update
+    update = types.Update(**await request.json())
+    await dp.process_update(update)
+    return web.Response(text="ok")
 
-# -------------------- HEALTHCHECK ДЛЯ WEB SERVICE --------------------
-async def health_server():
+async def health(_request: web.Request):
+    return web.Response(text="ok")
+
+async def on_startup(app: web.Application):
+    # Важно: сначала удаляем webhook (на всякий) и ставим заново
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(WEBHOOK_URL)
+    logging.info("Webhook set to %s", WEBHOOK_URL)
+
+async def on_shutdown(app: web.Application):
+    await bot.delete_webhook()
+
+def main():
     app = web.Application()
-
-    async def health(_request):
-        return web.Response(text="ok")
-
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logging.info("Health server started on port %s", PORT)
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
 
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
-async def on_startup(_dp: Dispatcher):
-    # поднимаем порт, чтобы Render видел "web service"
-    asyncio.create_task(health_server())
-
-
-# -------------------- ЗАПУСК --------------------
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    main()
