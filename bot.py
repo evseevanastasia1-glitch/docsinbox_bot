@@ -239,7 +239,12 @@ async def on_inn(message: types.Message, state: FSMContext):
     inn, kpp = extract_inn_kpp(message.text)
     await finalize(message, state, inn=inn, kpp=kpp)
 
-async def finalize(message: types.Message, state: FSMContext, inn: str = "", kpp: str = ""):
+async def finalize(
+    message: types.Message,
+    state: FSMContext,
+    inn: str = "",
+    kpp: str = "",
+):
     data = await state.get_data()
     rating = int(data.get("rating", 0))
 
@@ -255,21 +260,16 @@ async def finalize(message: types.Message, state: FSMContext, inn: str = "", kpp
         churn_risk(rating),            # Риск оттока
     ]
 
+    # запись в Google Sheets (в фоне)
     asyncio.create_task(append_row(row))
 
-    # ⬇️ ВАЖНО: всё внутри функции
+    # ⬇️ ВАЖНО: всё ниже — внутри функции
     await state.finish()
+
     await message.answer(
         "Спасибо за обратную связь, ваше мнение поможет нам стать лучше 💙",
-        reply_markup=types.ReplyKeyboardRemove()
+        reply_markup=types.ReplyKeyboardRemove(),  # ⬅️ кнопки УБИРАЕМ
     )
-
-    await state.finish()
-    await message.answer(
-    "Спасибо за обратную связь, ваше мнение поможет нам стать лучше 💙",
-    reply_markup=types.ReplyKeyboardRemove()
-)
-await state.finish()
 
 # -------------------- WEB APP (Webhook + Health) --------------------
 async def handle_webhook(request: web.Request):
