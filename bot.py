@@ -508,7 +508,8 @@ async def finish(message: types.Message, state: FSMContext):
 async def webhook(request):
     data = await request.json()
     update = types.Update.to_object(data)
-    Bot.set_current(bot)
+    Bot.set_current(bot
+    Dispatcher.set_current(dp)
     await dp.process_update(update)
     return web.Response(text="ok")
 
@@ -516,6 +517,7 @@ async def health(_):
     return web.Response(text="ok")
 
 async def on_startup(app):
+    await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
     logging.info("Webhook set to %s", WEBHOOK_URL)
 
